@@ -8,6 +8,9 @@ from numpy import random
 from random import randint
 import torch.backends.cudnn as cudnn
 
+from shapely.geometry import Point
+from shapely.geometry.polygon import Polygon
+
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
 from utils.general import check_img_size, check_requirements, \
@@ -21,6 +24,7 @@ from utils.download_weights import download
 
 #For SORT tracking
 import skimage
+import numpy as np
 from sort import *
 
 #............................... Bounding Boxes Drawing ............................
@@ -56,11 +60,11 @@ def draw_boxes(img, bbox, identities=None, categories=None, names=None, save_wit
 
 
 def detect(save_img=False):
-    source, weights, view_img, save_txt, imgsz, trace, colored_trk, save_bbox_dim, save_with_object_id= opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace, opt.colored_trk, opt.save_bbox_dim, opt.save_with_object_id
+    source, weights, view_img, save_txt, imgsz, trace, colored_trk, save_bbox_dim, save_with_object_id , area = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace, opt.colored_trk, opt.save_bbox_dim, opt.save_with_object_id , opt.restricted_area
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
-
+    area = [ i.split(' ') for i in area.split(',')]
 
     #.... Initialize SORT .... 
     #......................... 
@@ -160,6 +164,7 @@ def detect(save_img=False):
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
+        count = 0
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -171,6 +176,12 @@ def detect(save_img=False):
             save_path = str(save_dir / p.name)  # img.jpg
             txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            """ draw a red zone"""
+            polygon = Polygon([(int(area[0][0]),int(area[0][1])),(int(area[1][0]),int(area[1][1])),(int(area[2][0]),int(area[2][1])),(int(area[3][0]),int(area[3][1]))])
+            pts = np.array([[int(area[0][0]),int(area[0][1])],[int(area[1][0]),int(area[1][1])],[int(area[2][0]),int(area[2][1])],[int(area[3][0]),int(area[3][1])]], np.int32)
+            pts = pts.reshape((-1,1,2))
+            cv2.polylines(im0,[pts],True,(0,0,255) ,thickness= 3 )
+            """ end of red zone drawing """
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -197,33 +208,67 @@ def detect(save_img=False):
 
                 #loop over tracks
                 for track in tracks:
-                    # color = compute_color_for_labels(id)
-                    #draw colored tracks
-                    if colored_trk:
-                        [cv2.line(im0, (int(track.centroidarr[i][0]),
-                                    int(track.centroidarr[i][1])), 
-                                    (int(track.centroidarr[i+1][0]),
-                                    int(track.centroidarr[i+1][1])),
-                                    rand_color_list[track.id], thickness=2) 
-                                    for i,_ in  enumerate(track.centroidarr) 
-                                      if i < len(track.centroidarr)-1 ] 
-                    #draw same color tracks
-                    else:
-                        [cv2.line(im0, (int(track.centroidarr[i][0]),
-                                    int(track.centroidarr[i][1])), 
-                                    (int(track.centroidarr[i+1][0]),
-                                    int(track.centroidarr[i+1][1])),
-                                    (255,0,0), thickness=2) 
-                                    for i,_ in  enumerate(track.centroidarr) 
-                                      if i < len(track.centroidarr)-1 ] 
-
                     if save_txt and not save_with_object_id:
                         # Normalize coordinates
                         txt_str += "%i %i %f %f" % (track.id, track.detclass, track.centroidarr[-1][0] / im0.shape[1], track.centroidarr[-1][1] / im0.shape[0])
                         if save_bbox_dim:
                             txt_str += " %f %f" % (np.abs(track.bbox_history[-1][0] - track.bbox_history[-1][2]) / im0.shape[0], np.abs(track.bbox_history[-1][1] - track.bbox_history[-1][3]) / im0.shape[1])
                         txt_str += "\n"
-                
+                # polygon = Polygon([(int(area[0][0]),int(area[0][1])),(int(area[1][0]),int(area[1][1])),(int(area[2][0]),int(area[2][1])),(int(area[3][0]),int(area[3][1]))])
+                # pts = np.array([[int(area[0][0]),int(area[0][1])],[int(area[1][0]),int(area[1][1])],[int(area[2][0]),int(area[2][1])],[int(area[3][0]),int(area[3][1])]], np.int32)
+                # pts = pts.reshape((-1,1,2))
+                # cv2.polylines(im0,[pts],True,(0,0,255) ,thickness= 3 )
+                print("===============================================")
+                print (" det = " , det)
+                print("det type : " , type(det))
+                print("reversed det =  " , reversed(det))
+                print("===============================================")
+                for *xyxy, conf, cls in reversed(det):
+                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                    ress = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
+                    cls, xc ,yc ,w ,h = ress[0], ress[1],ress[2],ress[3],ress[4]
+                    W , H = im0.shape[1] , im0.shape[0]
+                    xc ,yc ,w ,h = xc* W , yc* H , w*W  , h*H
+                    xmin , xmax = xc - (w/2)  ,  xc +(w/2)
+                    ymin , ymax = yc - (h/2)  ,  yc + (h/2)
+                    point1 = Point( xmin , ymax)
+                    point2 = Point( xmax  , ymax)
+                    # polygon = Polygon([(int(area[0][0]),int(area[0][1])),(int(area[1][0]),int(area[1][1])),(int(area[2][0]),int(area[2][1])),(int(area[3][0]),int(area[3][1]))])
+                    # pts = np.array([[int(area[0][0]),int(area[0][1])],[int(area[1][0]),int(area[1][1])],[int(area[2][0]),int(area[2][1])],[int(area[3][0]),int(area[3][1])]], np.int32)
+                    # pts = pts.reshape((-1,1,2))
+                    # cv2.polylines(im0,[pts],True,(0,0,255) ,thickness= 3 )
+                    if polygon.contains(point1) or  polygon.contains(point2):
+                        cv2.rectangle(im0, (0,0), (1400,60), color=(0, 0, 0),thickness=-1)
+                        cv2.putText(img=im0, text='Warning: Person detected in red zone', org=(12, 60), fontFace=cv2.FONT_HERSHEY_DUPLEX, fontScale=1, color=(0, 0, 255),thickness=1)
+                    
+                    point11 = ( int(xmin) , int(ymax) )
+                    point22 = ( int(xmax) , int(ymax) )
+                        
+                    if polygon.contains(point1):
+                        cv2.circle(im0, point11 , radius=5, color=(0, 0, 255), thickness=-1)
+                    else :
+                        cv2.circle(im0, point11 , radius=5, color=(0, 255, 0), thickness=-1)    
+                        
+                    if polygon.contains(point2):
+                        cv2.circle(im0, point22 , radius=5, color=(0, 0, 255), thickness=-1)
+                    else :
+                        cv2.circle(im0, point22 , radius=5, color=(0, 255, 0), thickness=-1)
+                    # if cls == 23:
+                    #     if count == 0 :
+                    #         W , H = im0.shape[1] , im0.shape[0]
+                    #         xcp ,ycp  = xc* W , yc* H 
+                    #         count += 1
+
+                    #     if count == 5 or count == 15:
+                    #         W , H = im0.shape[1] , im0.shape[0]
+                    #         # xcc : xcenter current , xcp : xcenter previous
+                    #         xcc ,ycc  = xc* W , yc* H 
+                    #         if abs(xcc - xcp) > 10  or abs(ycc - ycp) > 10 :
+                    #             # moving
+                    #         xcp , ycp = xcc , ycc
+                    #         count += 1
+                            
+
                 if save_txt and not save_with_object_id:
                     with open(txt_path + '.txt', 'a') as f:
                         f.write(txt_str)
@@ -282,6 +327,7 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=str, default='inference/images', help='source')  # file/folder, 0 for webcam
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
+    parser.add_argument('--restricted-area', type=str, default="0 0,0 0,0 0,0 0", help='IOU threshold for NMS')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='IOU threshold for NMS')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='display results')
